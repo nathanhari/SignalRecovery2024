@@ -1,120 +1,98 @@
 import numpy as np
 import copy
 import cmath
+from scipy.fft import fft, ifft
+from scipy import linalg
 
 def chi(a, N):
     return(np.exp(2 * np.pi * complex(0, 1) * a/N))
 
-def recover_signal(sig_w_gaps, zero_freq):
-    """
-    recover_signal(signal, zero_freq) --> recovered_signal
-    signal_w_gaps = list with signal and missing parts as np.nan
-    zero_freq - the frequences where the Fourier transform is zero
-    recovered_signal - the signal with the gaps filled in based on this
-        algorithm
-    """
-    sig_len = len(sig_w_gaps)
-    missing_sig_pos = [i for i in range(sig_len) if cmath.isnan(sig_w_gaps[i])]
-    present_sig_pos = [i for i in range(sig_len) if i not in missing_sig_pos]
+def fill_in_zero(sig_w_gaps):
+    sig_filled_in = [0 if cmath.isnan(x) else x for x in sig_w_gaps]
+    return(sig_filled_in)
 
-    # Construct fourier sub-matrix (fsm)
-    fsm = np.array(
+def fill_in_previous(sig_w_gaps):
+    sig_len = len(sig_w_gaps)
+    sig_filled_in = copy.deepcopy(sig_w_gaps)
+    for i in range(sig_len):
+        if cmath.isnan(sig_filled_in[i]):
+            j = (i - 1) % sig_len
+            while cmath.isnan(sig_filled_in[j]):
+                j -= 1
+            sig_filled_in[i] = sig_filled_in[j]
+    return(sig_filled_in)
+
+FILL_IN_METHODS = {
+    'fill_in_zero': fill_in_zero,
+    'fill_in_previous': fill_in_previous
+}
+
+def find_lowest_mod_frequences(ft, n_spots):
+    spots_sorted_by_abs = sorted(range(len(ft)), key=lambda x: abs(ft[x]))
+    min_abs_spots = sorted(spots_sorted_by_abs[:n_spots])
+    return(min_abs_spots)
+
+def get_fourier_sub_mtx(spots_rows, spots_cols, N):
+    mtx = np.array(
         [
             [
-                chi(-1 * pos * freq, sig_len) for pos in missing_sig_pos
+                chi(-1 * i * j, N) for i in spots_cols
             ]
-            for freq in zero_freq
+            for j in spots_rows
         ]
     )
-    
-    # Construct target vector (tv)
-    tv = np.array(
-        [
-            -1 * np.sum(
-                [
-                    chi(-1 * pos * freq, sig_len) * sig_w_gaps[pos]
-                    for pos in present_sig_pos    
-                ]
-            )
-            for freq in zero_freq
-        ]
-    )
-    
-    # Solve the matrix equation and fill in the values recovered
-    rec_vals = np.linalg.solve(fsm, tv)
-    full_sig = copy.deepcopy(sig_w_gaps)
-    for k in range(len(missing_sig_pos)):
-        pos = missing_sig_pos[k]
-        full_sig[pos] = rec_vals[k]
-    
-    return(full_sig)
+    return(mtx)
 
-if __name__ == "__main__":
-    from scipy.fft import ifft
-    n_tests = 1000
-    min_test_len = 20
-    max_test_len = 100
-    fn = '20250825_001'
-    f1 = open(r'../{}_1.csv'.format(fn), 'w')
-    f2 = open(r'../{}_2.csv'.format(fn), 'w')
-    f1.write(
-        'n|error|norm|err/norm|test_len|n_zeros\n'
-    )
-    f2.write(
-        'n|error|norm|err/norm|test_len|n_zeros|fourier_transform|full_signal|signal_w_gaps\n'
-    )
-    for n in range(n_tests):
-        test_len = np.random.randint(min_test_len, max_test_len + 1)
-        n_zeros = np.random.randint(1, test_len/10)
-        f_hat = [
-            complex(np.random.rand(), np.random.rand())
-            for freq in range(test_len)
+def get_beta_val(freq, sig_w_gaps):
+    sig_len = len(sig_w_gaps)
+    missing_spots = [
+        i for i in range(sig_len) if cmath.isnan(sig_w_gaps[i])
+    ]
+    known_spots = [
+        i for i in range(sig_len) if i not in missing_spots
+    ]
+    beta_val = sum(
+        [
+            chi(-1 * i * freq, sig_len) * sig_w_gaps[i] for i in known_spots
         ]
-        freq_zeros = np.random.choice(range(test_len), n_zeros, replace=False)
-        for freq in freq_zeros:
-            f_hat[freq] = 0
-        full_sig = ifft(f_hat)
-        pos_missing = np.random.choice(range(test_len), n_zeros, replace=False)
-        sig_w_gaps = copy.deepcopy(full_sig)
-        for pos in pos_missing:
-            sig_w_gaps[pos] = None
-        rec_sig = recover_signal(sig_w_gaps, freq_zeros)
-        err = np.linalg.norm(rec_sig - full_sig, 2)
-        norm = np.linalg.norm(full_sig, 2)
-        print(
-            '{}|{}|{}|{}|{}|{}'.format(
-                n,
-                err,
-                norm,
-                err/norm,
-                test_len,
-                n_zeros
-            )
-        )
-        f1.write(
-            '{}|{}|{}|{}|{}|{}'.format(
-                n,
-                err,
-                norm,
-                err/norm,
-                test_len,
-                n_zeros
-            ).replace('\n', '')
-        )
-        f1.write('\n')
-        f2.write(
-            '{}|{}|{}|{}|{}|{}|{}|{}|{}'.format(
-                n,
-                err,
-                norm,
-                err/norm,
-                test_len,
-                n_zeros,
-                f_hat,
-                full_sig,
-                sig_w_gaps
-            ).replace('\n', '')
-        )
-        f2.write('\n')
-    f1.close()
-    f2.close()
+    )
+    return(beta_val)
+
+def get_beta(freqs, sig_w_gaps):
+    # beta = [get_beta_val(freq, sig_w_gaps) for freq in freqs]
+    sig_len = len(sig_w_gaps)
+    missing_spots = [
+        i for i in range(sig_len) if cmath.isnan(sig_w_gaps[i])
+    ]
+    known_spots = [
+        i for i in range(sig_len) if i not in missing_spots
+    ]
+    known_vals = np.array([sig_w_gaps[i] for i in known_spots])
+    mtx = get_fourier_sub_mtx(
+        freqs,
+        known_spots,
+        sig_len
+    )
+    beta = np.dot(mtx, known_vals)
+    return(beta)
+
+def recover_signal(sig_w_gaps, fill_in_method='fill_in_previous'):
+    sig_w_gaps = copy.deepcopy(sig_w_gaps).astype(complex)
+    fill_in_method = FILL_IN_METHODS[fill_in_method]
+    sig_len = len(sig_w_gaps)
+    missing_spots = [
+        i for i in range(sig_len) if cmath.isnan(sig_w_gaps[i])
+    ]
+    n_missing_spots = len(missing_spots)
+    sig_fi = fill_in_method(sig_w_gaps)
+    sig_fi_ft = fft(sig_fi)
+    zero_out_freqs = find_lowest_mod_frequences(sig_fi_ft, n_missing_spots)
+    mtx = get_fourier_sub_mtx(zero_out_freqs, missing_spots, sig_len)
+    beta = get_beta(zero_out_freqs, sig_w_gaps)
+    value_estimates = linalg.solve(mtx, -1 * beta)
+    sig_estimate = copy.deepcopy(sig_w_gaps)
+    for i in range(n_missing_spots):
+        spot = missing_spots[i]
+        value = value_estimates[i]
+        sig_estimate[spot] = value
+    return(sig_estimate)
